@@ -1,0 +1,110 @@
+# New York Taxi Data Processing
+
+## Project Overview
+
+This project processes the New York Taxi Trip dataset to extract, clean, and analyze data for deriving insights into taxi usage patterns.
+
+## Data Extraction
+-------------------------------------------------------------------
+import requests
+from retrying import retry
+
+@retry(stop_max_attempt_number=5, wait_fixed=2000)
+def download_file(url, output_path):
+    response = requests.get(url)
+    response.raise_for_status()  
+# Check for HTTP errors
+    with open(output_path, 'wb') as file:
+        file.write(response.content)
+
+year = 2019
+base_url = f"https://www.nyc.gov/site/tlc/about/tlc-trip-record-data.page/yellow_tripdata_{year}-"
+for month in range(1, 13):
+    url = base_url + f"{month:02d}.csv"
+    output_path = f"data/yellow_tripdata_{year}-{month:02d}.csv"
+    try:
+        download_file(url, output_path)
+        print(f"Downloaded {output_path}")
+    except Exception as e:
+        print(f"Failed to download {url}: {e}")
+
+## Data Processing
+-------------------------------------------------------------
+
+import pandas as pd
+
+def clean_and_transform_data(df):
+    # Remove trips with missing or corrupt data
+    df = df.dropna()
+
+    # Derive new columns
+    df['trip_duration'] = (pd.to_datetime(df['tpep_dropoff_datetime']) - pd.to_datetime(df['tpep_pickup_datetime'])).dt.total_seconds() / 60
+    df['average_speed'] = df['trip_distance'] / (df['trip_duration'] / 60)
+
+    # Remove rows with unrealistic values
+    df = df[(df['trip_duration'] > 0) & (df['average_speed'] > 0) & (df['trip_distance'] > 0)]
+
+    # Aggregate data
+    df['date'] = pd.to_datetime(df['tpep_pickup_datetime']).dt.date
+    daily_summary = df.groupby('date').agg({
+        'fare_amount': 'mean',
+        'trip_distance': 'sum',
+        'trip_duration': 'sum',
+        'average_speed': 'mean',
+        'VendorID': 'count'
+    }).rename(columns={'VendorID': 'total_trips', 'fare_amount': 'average_fare'})
+
+    return df, daily_summary
+
+# Example usage
+
+df = pd.read_csv('data/yellow_tripdata_2019-01.csv')
+clean_df, daily_summary_df = clean_and_transform_data(df)
+
+## Data Loading
+------------------------------------------------------------
+import sqlite3
+
+def load_to_sqlite(df, db_name):
+    conn = sqlite3.connect(db_name)
+    df.to_sql('trips', conn, if_exists='replace', index=False)
+    conn.close()
+
+# Example usage
+load_to_sqlite(clean_df, 'ny_taxi_data.db')
+
+## Data Analysis and Reporting
+--------------------------------------------------------------
+-- Example SQL queries
+
+SELECT strftime('%H', tpep_pickup_datetime) AS hour, COUNT(*) AS total_trips
+FROM trips
+GROUP BY hour
+ORDER BY total_trips DESC;
+
+SELECT passenger_count, AVG(fare_amount) AS average_fare
+FROM trips
+GROUP BY passenger_count
+ORDER BY passenger_count;
+
+SELECT strftime('%Y-%m', tpep_pickup_datetime) AS month, COUNT(*) AS total_trips
+FROM trips
+GROUP BY month
+ORDER BY month;
+
+## Visualisations using python libraries
+---------------------------------------------
+import matplotlib.pyplot as plt
+
+def plot_trips_per_hour(df):
+    df['hour'] = pd.to_datetime(df['tpep_pickup_datetime']).dt.hour
+    hourly_trips = df.groupby('hour').size()
+    hourly_trips.plot(kind='bar')
+    plt.title('Total Trips per Hour')
+    plt.xlabel('Hour')
+    plt.ylabel('Total Trips')
+    plt.show()
+
+# Example usage
+
+plot_trips_per_hour(clean_df)
